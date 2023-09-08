@@ -207,12 +207,13 @@ bool http_conn::read_once()
     if (0 == m_TRIGMode)
     {
         bytes_read = recv(m_sockfd, m_read_buf + m_read_idx, READ_BUFFER_SIZE - m_read_idx, 0);
-        m_read_idx += bytes_read;
 
         if (bytes_read <= 0)
         {
             return false;
         }
+
+        m_read_idx += bytes_read;
 
         return true;
     }
@@ -246,8 +247,11 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text)
     {
         return BAD_REQUEST;
     }
+    
     *m_url++ = '\0';
     char *method = text;
+    cgi = 0;
+
     if (strcasecmp(method, "GET") == 0)
         m_method = GET;
     else if (strcasecmp(method, "POST") == 0)
@@ -257,6 +261,7 @@ http_conn::HTTP_CODE http_conn::parse_request_line(char *text)
     }
     else
         return BAD_REQUEST;
+    
     m_url += strspn(m_url, " \t");
     m_version = strpbrk(m_url, " \t");
     if (!m_version)
@@ -291,12 +296,16 @@ http_conn::HTTP_CODE http_conn::parse_headers(char *text)
 {
     if (text[0] == '\0')
     {
-        if (m_content_length != 0)
-        {
-            m_check_state = CHECK_STATE_CONTENT;
-            return NO_REQUEST;
-        }
-        return GET_REQUEST;
+        // if (m_content_length != 0)
+        // {
+        //     m_check_state = CHECK_STATE_CONTENT;
+        //     return NO_REQUEST;
+        // }
+        // return GET_REQUEST;
+
+        if (m_content_length == 0) return GET_REQUEST;
+
+        m_check_state = CHECK_STATE_CONTENT;
     }
     else if (strncasecmp(text, "Connection:", 11) == 0)
     {

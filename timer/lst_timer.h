@@ -39,7 +39,10 @@ public:
     util_timer() : prev(NULL), next(NULL) {}
 
 public:
-    time_t expire;
+    // time_t expire;
+    int expire;
+    int rotation;
+    int time_slot;
     
     void (* cb_func)(client_data *);
     client_data *user_data;
@@ -47,22 +50,44 @@ public:
     util_timer *next;
 };
 
-class sort_timer_lst
+class time_wheel
 {
 public:
-    sort_timer_lst();
-    ~sort_timer_lst();
+    time_wheel() : cur_slot(0)
+    {
+        for (int i = 0; i < N; ++i) slot[i] = nullptr;
+    };
+    ~time_wheel()
+    {
+        for (int i = 0; i < N; ++i)
+        {
+            util_timer* tmp = slot[i];
+            while (tmp)
+            {
+                slot[i] = tmp->next;
+                delete tmp;
+                tmp = slot[i];                
+            }
+        }
+    };
 
     void add_timer(util_timer *timer);
     void adjust_timer(util_timer *timer);
     void del_timer(util_timer *timer);
     void tick();
 
-private:
-    void add_timer(util_timer *timer, util_timer *lst_head);
+public:
+    static const int N = 30;    //轮盘大小
+    static const int SI = 1;    //每SI秒转动一次
 
-    util_timer *head;
-    util_timer *tail;
+private:
+    // void add_timer(util_timer *timer, util_timer *lst_head);
+
+    // util_timer *head;
+    // util_timer *tail;
+
+    util_timer* slot[N];
+    int cur_slot;
 };
 
 class Utils
@@ -71,7 +96,7 @@ public:
     Utils() {}
     ~Utils() {}
 
-    void init(int timeslot);
+    // void init(int timeslot);
 
     //对文件描述符设置非阻塞
     int setnonblocking(int fd);
@@ -92,9 +117,9 @@ public:
 
 public:
     static int *u_pipefd;
-    sort_timer_lst m_timer_lst;
+    time_wheel m_timer_lst;
     static int u_epollfd;
-    int m_TIMESLOT;
+    // int m_TIMESLOT;
 };
 
 void cb_func(client_data *user_data);

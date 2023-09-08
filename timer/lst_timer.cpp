@@ -1,153 +1,115 @@
 #include "lst_timer.h"
 #include "../http/http_conn.h"
 
-sort_timer_lst::sort_timer_lst()
+void time_wheel::add_timer(util_timer *timer)
 {
-    head = NULL;
-    tail = NULL;
-}
-sort_timer_lst::~sort_timer_lst()
-{
-    util_timer *tmp = head;
-    while (tmp)
+    if (!timer) return ;
+
+    int ticks = 0;
+    if (timer->expire < SI) ticks = 1;
+    else ticks = timer->expire / SI;
+
+    int rotation = ticks / N;
+    int ts = ( cur_slot + (ticks % N) ) % N;
+    timer->rotation = rotation;
+    timer->time_slot = ts;
+
+    if ( !slot[ts] ) slot[ts] = timer;
+    else 
     {
-        head = tmp->next;
-        delete tmp;
-        tmp = head;
+        timer->next = slot[ts];
+        slot[ts] -> prev = timer;
+        slot[ts] = timer;
     }
 }
 
-void sort_timer_lst::add_timer(util_timer *timer)
+void time_wheel::adjust_timer(util_timer *timer)
 {
-    if (!timer)
+    if (!timer) return ;
+
+    int ts = timer->time_slot;
+    if (timer == slot[ts]) 
     {
-        return;
-    }
-    if (!head)
-    {
-        head = tail = timer;
-        return;
-    }
-    if (timer->expire < head->expire)
-    {
-        timer->next = head;
-        head->prev = timer;
-        head = timer;
-        return;
-    }
-    add_timer(timer, head);
-}
-void sort_timer_lst::adjust_timer(util_timer *timer)
-{
-    if (!timer)
-    {
-        return;
-    }
-    util_timer *tmp = timer->next;
-    if (!tmp || (timer->expire < tmp->expire))
-    {
-        return;
-    }
-    if (timer == head)
-    {
-        head = head->next;
-        head->prev = NULL;
-        timer->next = NULL;
-        add_timer(timer, head);
-    }
-    else
+        slot[ts] = slot[ts]->next;
+        if (slot[ts]) slot[ts]->prev = nullptr;
+    } 
+    else 
     {
         timer->prev->next = timer->next;
-        timer->next->prev = timer->prev;
-        add_timer(timer, timer->next);
+        if (timer -> next) timer->next->prev = timer->prev;
     }
-}
-void sort_timer_lst::del_timer(util_timer *timer)
-{
-    if (!timer)
+
+    int ticks = 0;
+    if (timer->expire < SI) ticks = 1;
+    else ticks = timer->expire / SI;
+
+    int rotation = ticks / N;
+    ts = ( cur_slot + (ticks % N) ) % N;
+    timer->rotation = rotation;
+    timer->time_slot = ts;
+
+    if ( !slot[ts] ) slot[ts] = timer;
+    else 
     {
-        return;
-    }
-    if ((timer == head) && (timer == tail))
-    {
-        delete timer;
-        head = NULL;
-        tail = NULL;
-        return;
-    }
-    if (timer == head)
-    {
-        head = head->next;
-        head->prev = NULL;
-        delete timer;
-        return;
-    }
-    if (timer == tail)
-    {
-        tail = tail->prev;
-        tail->next = NULL;
-        delete timer;
-        return;
-    }
-    timer->prev->next = timer->next;
-    timer->next->prev = timer->prev;
-    delete timer;
-}
-void sort_timer_lst::tick()
-{
-    if (!head)
-    {
-        return;
-    }
-    
-    time_t cur = time(NULL);
-    util_timer *tmp = head;
-    while (tmp)
-    {
-        if (cur < tmp->expire)
-        {
-            break;
-        }
-        tmp->cb_func(tmp->user_data);
-        head = tmp->next;
-        if (head)
-        {
-            head->prev = NULL;
-        }
-        delete tmp;
-        tmp = head;
+        timer->next = slot[ts];
+        slot[ts] -> prev = timer;
+        slot[ts] = timer;
     }
 }
 
-void sort_timer_lst::add_timer(util_timer *timer, util_timer *lst_head)
+void time_wheel::del_timer(util_timer *timer)
 {
-    util_timer *prev = lst_head;
-    util_timer *tmp = prev->next;
-    while (tmp)
+    if (!timer) return ;
+
+    int ts = timer->time_slot;
+    if (timer == slot[ts]) 
     {
-        if (timer->expire < tmp->expire)
-        {
-            prev->next = timer;
-            timer->next = tmp;
-            tmp->prev = timer;
-            timer->prev = prev;
-            break;
-        }
-        prev = tmp;
-        tmp = tmp->next;
-    }
-    if (!tmp)
+        slot[ts] = slot[ts]->next;
+        if (slot[ts]) slot[ts]->prev = nullptr;
+        delete timer;
+    } 
+    else 
     {
-        prev->next = timer;
-        timer->prev = prev;
-        timer->next = NULL;
-        tail = timer;
+        timer->prev->next = timer->next;
+        if (timer -> next) timer->next->prev = timer->prev;
+        delete timer;
     }
 }
-
-void Utils::init(int timeslot)
+void time_wheel::tick()
 {
-    m_TIMESLOT = timeslot;
+    util_timer* tmp = slot[cur_slot];
+    while (tmp)
+    {
+        if (tmp->rotation > 0)
+        {
+            --tmp->rotation;
+            tmp = tmp->next;
+        }
+        else
+        {
+            tmp->cb_func(tmp->user_data);
+
+            if (tmp == slot[cur_slot])
+            {
+                slot[cur_slot] = slot[cur_slot]->next;
+                if (slot[cur_slot]) slot[cur_slot]->prev = nullptr;
+
+                delete tmp;
+                tmp = slot[cur_slot];
+            }
+            else
+            {
+                tmp->prev->next = tmp->next;
+                if (tmp -> next) tmp->next->prev = tmp->prev;
+                util_timer* tmp2 = tmp -> next;
+                delete tmp;
+                tmp = tmp2;
+            }
+        }
+    }
+
+    ++cur_slot;
+    if (cur_slot >= N) cur_slot -= N;
 }
 
 //对文件描述符设置非阻塞
@@ -202,7 +164,8 @@ void Utils::addsig(int sig, void(handler)(int), bool restart)
 void Utils::timer_handler()
 {
     m_timer_lst.tick();
-    alarm(m_TIMESLOT);
+    // alarm(m_TIMESLOT);
+    alarm(time_wheel::SI);
 }
 
 void Utils::show_error(int connfd, const char *info)

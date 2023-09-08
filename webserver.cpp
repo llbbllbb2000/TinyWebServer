@@ -107,32 +107,36 @@ void WebServer::eventListen()
     assert(m_listenfd >= 0);
 
     //优雅关闭连接
-    if (0 == m_OPT_LINGER)
-    {
-        struct linger tmp = {0, 1};
-        setsockopt(m_listenfd, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
-    }
-    else if (1 == m_OPT_LINGER)
-    {
-        struct linger tmp = {1, 1};
-        setsockopt(m_listenfd, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
-    }
+    struct linger tmp = {m_OPT_LINGER, 1};
+    setsockopt(m_listenfd, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
+    // if (0 == m_OPT_LINGER)
+    // {
+    //     struct linger tmp = {0, 1};
+    //     setsockopt(m_listenfd, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
+    // }
+    // else if (1 == m_OPT_LINGER)
+    // {
+    //     struct linger tmp = {1, 1};
+    //     setsockopt(m_listenfd, SOL_SOCKET, SO_LINGER, &tmp, sizeof(tmp));
+    // }
 
     int ret = 0;
     struct sockaddr_in address;
-    bzero(&address, sizeof(address));
-    address.sin_family = AF_INET;
+    bzero(&address, sizeof address);
+    address.sin_family = PF_INET;
     address.sin_addr.s_addr = htonl(INADDR_ANY);
     address.sin_port = htons(m_port);
 
-    int flag = 1;
-    setsockopt(m_listenfd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
-    ret = bind(m_listenfd, (struct sockaddr *)&address, sizeof(address));
+    // int flag = 1;
+    // setsockopt(m_listenfd, SOL_SOCKET, SO_REUSEADDR, &flag, sizeof(flag));
+
+    ret = bind(m_listenfd, ( struct sockaddr* )&address, sizeof address);
     assert(ret >= 0);
+
     ret = listen(m_listenfd, 5);
     assert(ret >= 0);
 
-    utils.init(TIMESLOT);
+    // utils.init(TIMESLOT);
 
     //epoll创建内核事件表
     epoll_event events[MAX_EVENT_NUMBER];
@@ -144,16 +148,19 @@ void WebServer::eventListen()
 
     ret = socketpair(PF_UNIX, SOCK_STREAM, 0, m_pipefd);
     assert(ret != -1);
-    utils.setnonblocking(m_pipefd[1]);
+    utils.setnonblocking(m_pipefd[1]);  // write;
     utils.addfd(m_epollfd, m_pipefd[0], false, 0);
 
+    // SIGPIPE即错误的写操作会默认结束进程，但我们不希望如此
     utils.addsig(SIGPIPE, SIG_IGN);
+    // 由于信号是一种异步事件（信号处理函数和程序主循环并非一条执行路线）
+    // 为避免信号被屏蔽太久，我们可以把信号的主要处理逻辑放入程序主循环中
+    // 即使用全双工通道socketpair，信号处理函数写入pipe，主循环读pipe即可
     utils.addsig(SIGALRM, utils.sig_handler, false);
     utils.addsig(SIGTERM, utils.sig_handler, false);
 
     alarm(TIMESLOT);
 
-    //工具类,信号和描述符基础操作
     Utils::u_pipefd = m_pipefd;
     Utils::u_epollfd = m_epollfd;
 }
@@ -169,8 +176,9 @@ void WebServer::timer(int connfd, struct sockaddr_in client_address)
     util_timer *timer = new util_timer;
     timer->user_data = &users_timer[connfd];
     timer->cb_func = cb_func;
-    time_t cur = time(NULL);
-    timer->expire = cur + 3 * TIMESLOT;
+    // time_t cur = time(NULL);
+    // timer->expire = cur + 3 * TIMESLOT;
+    timer->expire = 3 * TIMESLOT;
     users_timer[connfd].timer = timer;
     utils.m_timer_lst.add_timer(timer);
 }
@@ -179,14 +187,14 @@ void WebServer::timer(int connfd, struct sockaddr_in client_address)
 //并对新的定时器在链表上的位置进行调整
 void WebServer::adjust_timer(util_timer *timer)
 {
-    time_t cur = time(NULL);
-    timer->expire = cur + 3 * TIMESLOT;
+    // time_t cur = time(NULL);
+    // timer->expire = cur + 3 * TIMESLOT;
     utils.m_timer_lst.adjust_timer(timer);
 
     LOG_INFO("%s", "adjust timer once");
 }
 
-void WebServer::deal_timer(util_timer *timer, int sockfd)
+void WebServer::del_timer(util_timer *timer, int sockfd)
 {
     timer->cb_func(&users_timer[sockfd]);
     if (timer)
@@ -292,13 +300,13 @@ void WebServer::dealwithread(int sockfd)
         //若监测到读事件，将该事件放入请求队列
         m_pool->append(users + sockfd, 0);
 
-        while (true)
+        while (true)    //自旋锁
         {
             if (1 == users[sockfd].improv)
             {
                 if (1 == users[sockfd].timer_flag)
                 {
-                    deal_timer(timer, sockfd);
+                    del_timer(timer, sockfd);
                     users[sockfd].timer_flag = 0;
                 }
                 users[sockfd].improv = 0;
@@ -323,7 +331,7 @@ void WebServer::dealwithread(int sockfd)
         }
         else
         {
-            deal_timer(timer, sockfd);
+            del_timer(timer, sockfd);
         }
     }
 }
@@ -341,13 +349,13 @@ void WebServer::dealwithwrite(int sockfd)
 
         m_pool->append(users + sockfd, 1);
 
-        while (true)
+        while (true)    //自旋锁
         {
             if (1 == users[sockfd].improv)
             {
                 if (1 == users[sockfd].timer_flag)
                 {
-                    deal_timer(timer, sockfd);
+                    del_timer(timer, sockfd);
                     users[sockfd].timer_flag = 0;
                 }
                 users[sockfd].improv = 0;
@@ -369,7 +377,7 @@ void WebServer::dealwithwrite(int sockfd)
         }
         else
         {
-            deal_timer(timer, sockfd);
+            del_timer(timer, sockfd);
         }
     }
 }
@@ -395,15 +403,16 @@ void WebServer::eventLoop()
             //处理新到的客户连接
             if (sockfd == m_listenfd)
             {
-                bool flag = dealclinetdata();
-                if (false == flag)
-                    continue;
+                // bool flag = dealclinetdata();
+                // if (false == flag)
+                //     continue;
+                dealclinetdata();
             }
             else if (events[i].events & (EPOLLRDHUP | EPOLLHUP | EPOLLERR))
             {
                 //服务器端关闭连接，移除对应的定时器
                 util_timer *timer = users_timer[sockfd].timer;
-                deal_timer(timer, sockfd);
+                del_timer(timer, sockfd);
             }
             //处理信号
             else if ((sockfd == m_pipefd[0]) && (events[i].events & EPOLLIN))
